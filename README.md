@@ -44,6 +44,8 @@ sageattention-2.2.0+cu130.torch2.13.0-cp312-cp312-linux_x86_64.whl
 
 Publishing a GitHub release is an explicit workflow option. Ordinary runs
 produce an attested workflow artifact without changing release state.
+Pull requests build and import-test the default compatibility tuple, then
+upload the wheel as a workflow artifact without attesting or publishing it.
 
 ## Compatibility
 

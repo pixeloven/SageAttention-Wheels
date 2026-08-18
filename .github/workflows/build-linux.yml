@@ -1,6 +1,7 @@
 name: Build Linux wheel
 
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       sage_ref:
@@ -45,6 +46,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SAGE_REF: ${{ inputs.sage_ref || 'v2.2.0' }}
+      PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
+      TORCH_VERSION: ${{ inputs.torch_version || '2.13.0' }}
+      TORCH_INDEX: ${{ inputs.torch_index || 'cu130' }}
+      CUDA_VERSION: ${{ inputs.cuda_version || '13.0.2' }}
+      CUDA_ARCH_LIST: ${{ inputs.cuda_arch_list || '8.0;8.6;8.9;9.0;10.0;12.0;12.1' }}
     permissions:
       attestations: write
       contents: write
@@ -57,7 +65,6 @@ jobs:
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          SAGE_REF: ${{ inputs.sage_ref }}
         run: |
           sha=$(gh api "repos/thu-ml/SageAttention/commits/${SAGE_REF}" --jq .sha)
           test -n "$sha"
@@ -74,11 +81,11 @@ jobs:
           outputs: type=local,dest=dist
           build-args: |
             SAGE_COMMIT=${{ steps.source.outputs.sha }}
-            PYTHON_VERSION=${{ inputs.python_version }}
-            TORCH_VERSION=${{ inputs.torch_version }}
-            TORCH_INDEX=${{ inputs.torch_index }}
-            CUDA_VERSION=${{ inputs.cuda_version }}
-            CUDA_ARCH_LIST=${{ inputs.cuda_arch_list }}
+            PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+            TORCH_VERSION=${{ env.TORCH_VERSION }}
+            TORCH_INDEX=${{ env.TORCH_INDEX }}
+            CUDA_VERSION=${{ env.CUDA_VERSION }}
+            CUDA_ARCH_LIST=${{ env.CUDA_ARCH_LIST }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
@@ -87,7 +94,6 @@ jobs:
       - name: Record build provenance
         env:
           SAGE_COMMIT: ${{ steps.source.outputs.sha }}
-          SAGE_REF: ${{ inputs.sage_ref }}
         run: |
           wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
           test -n "$wheel"
@@ -96,14 +102,15 @@ jobs:
             echo "upstream_repository=https://github.com/thu-ml/SageAttention"
             echo "upstream_ref=$SAGE_REF"
             echo "upstream_commit=$SAGE_COMMIT"
-            echo "python=${{ inputs.python_version }}"
-            echo "torch=${{ inputs.torch_version }}"
-            echo "torch_index=${{ inputs.torch_index }}"
-            echo "cuda=${{ inputs.cuda_version }}"
-            echo "cuda_arch_list=${{ inputs.cuda_arch_list }}"
+            echo "python=$PYTHON_VERSION"
+            echo "torch=$TORCH_VERSION"
+            echo "torch_index=$TORCH_INDEX"
+            echo "cuda=$CUDA_VERSION"
+            echo "cuda_arch_list=$CUDA_ARCH_LIST"
           } | tee dist/BUILD-INFO.txt
 
       - name: Attest wheel
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/attest@v4
         with:
           subject-path: dist/*.whl
@@ -111,19 +118,19 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sageattention-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}
+          name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}
           path: dist/
           archive: false
 
       - name: Publish GitHub release
-        if: ${{ inputs.publish_release }}
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         env:
           GH_TOKEN: ${{ github.token }}
           SAGE_COMMIT: ${{ steps.source.outputs.sha }}
         run: |
-          tag="sageattention-${{ inputs.sage_ref }}-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}"
-          title="SageAttention ${{ inputs.sage_ref }} · ${{ inputs.torch_index }} · Torch ${{ inputs.torch_version }}"
-          notes="Built from thu-ml/SageAttention commit ${SAGE_COMMIT} with CUDA ${{ inputs.cuda_version }}."
+          tag="sageattention-${SAGE_REF}-${TORCH_INDEX}-torch${TORCH_VERSION}"
+          title="SageAttention ${SAGE_REF} · ${TORCH_INDEX} · Torch ${TORCH_VERSION}"
+          notes="Built from thu-ml/SageAttention commit ${SAGE_COMMIT} with CUDA ${CUDA_VERSION}."
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber
           else
