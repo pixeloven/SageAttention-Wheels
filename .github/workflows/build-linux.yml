@@ -58,16 +58,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
+  source:
     runs-on: ubuntu-latest
     outputs:
       sage_commit: ${{ steps.source.outputs.sha }}
+      architectures: ${{ steps.architectures.outputs.matrix }}
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Free runner disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
       - name: Resolve canonical source ref
         id: source
@@ -77,6 +75,38 @@ jobs:
           sha=$(gh api "repos/thu-ml/SageAttention/commits/${SAGE_REF}" --jq .sha)
           test -n "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve architecture matrix
+        id: architectures
+        run: |
+          matrix=$(jq -cn --arg value "$CUDA_ARCH_LIST" '
+            $value
+            | split(";")
+            | map(gsub("^\\s+|\\s+$"; ""))
+            | map(select(length > 0))
+            | unique as $arches
+            | if ($arches | length) == 0 then
+                error("CUDA architecture list is empty")
+              elif all($arches[]; . as $arch | ["8.0", "8.6", "8.9", "9.0", "12.0"] | index($arch)) | not then
+                error("unsupported CUDA architecture requested")
+              else
+                $arches | map({capability: ., tag: ("sm" + gsub("\\."; ""))})
+              end')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: source
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: ${{ fromJSON(needs.source.outputs.architectures) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -88,12 +118,13 @@ jobs:
           target: export
           outputs: type=local,dest=dist
           build-args: |
-            SAGE_COMMIT=${{ steps.source.outputs.sha }}
+            SAGE_COMMIT=${{ needs.source.outputs.sage_commit }}
             PYTHON_VERSION=${{ env.PYTHON_VERSION }}
             TORCH_VERSION=${{ env.TORCH_VERSION }}
             TORCH_INDEX=${{ env.TORCH_INDEX }}
             CUDA_VERSION=${{ env.CUDA_VERSION }}
-            CUDA_ARCH_LIST=${{ env.CUDA_ARCH_LIST }}
+            CUDA_ARCH_LIST=${{ matrix.architecture.capability }}
+            CUDA_ARCH_TAG=${{ matrix.architecture.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=min
           provenance: false
@@ -101,11 +132,14 @@ jobs:
 
       - name: Record build provenance
         env:
-          SAGE_COMMIT: ${{ steps.source.outputs.sha }}
+          SAGE_COMMIT: ${{ needs.source.outputs.sage_commit }}
+          CUDA_ARCH: ${{ matrix.architecture.capability }}
+          CUDA_ARCH_TAG: ${{ matrix.architecture.tag }}
         run: |
           wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
           test -n "$wheel"
-          sha256sum "$wheel" | tee dist/SHA256SUMS
+          mv dist/TOOLCHAIN.txt "dist/TOOLCHAIN-${CUDA_ARCH_TAG}.txt"
+          sha256sum "$wheel" | tee "dist/SHA256SUMS-${CUDA_ARCH_TAG}"
           {
             echo "upstream_repository=https://github.com/thu-ml/SageAttention"
             echo "upstream_ref=$SAGE_REF"
@@ -114,18 +148,18 @@ jobs:
             echo "torch=$TORCH_VERSION"
             echo "torch_index=$TORCH_INDEX"
             echo "cuda=$CUDA_VERSION"
-            echo "cuda_arch_list=$CUDA_ARCH_LIST"
-          } | tee dist/BUILD-INFO.txt
+            echo "cuda_arch=$CUDA_ARCH"
+          } | tee "dist/BUILD-INFO-${CUDA_ARCH_TAG}.txt"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}
+          name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-${{ matrix.architecture.tag }}
           path: dist/
 
   publish:
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: [source, build]
     runs-on: ubuntu-latest
     concurrency:
       group: publish-${{ inputs.sage_ref }}-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}
@@ -139,7 +173,8 @@ jobs:
       - name: Download built wheel
         uses: actions/download-artifact@v8
         with:
-          name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}
+          pattern: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-sm*
+          merge-multiple: true
           path: dist
 
       - name: Attest wheel
@@ -151,7 +186,7 @@ jobs:
         if: inputs.publish_release
         env:
           GH_TOKEN: ${{ github.token }}
-          SAGE_COMMIT: ${{ needs.build.outputs.sage_commit }}
+          SAGE_COMMIT: ${{ needs.source.outputs.sage_commit }}
         run: |
           tag="sageattention-${SAGE_REF}-${TORCH_INDEX}-torch${TORCH_VERSION}"
           title="SageAttention ${SAGE_REF} · ${TORCH_INDEX} · Torch ${TORCH_VERSION}"
@@ -159,12 +194,15 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             existing=$(mktemp -d)
             trap 'rm -rf "$existing"' EXIT
-            gh release download "$tag" --pattern BUILD-INFO.txt --dir "$existing"
-            if ! cmp -s "$existing/BUILD-INFO.txt" dist/BUILD-INFO.txt; then
-              echo "Refusing to replace release assets built from a different compatibility tuple" >&2
-              diff -u "$existing/BUILD-INFO.txt" dist/BUILD-INFO.txt || true
-              exit 1
-            fi
+            gh release download "$tag" --pattern 'BUILD-INFO-sm*.txt' --dir "$existing"
+            for info in dist/BUILD-INFO-sm*.txt; do
+              existing_info="$existing/$(basename "$info")"
+              if ! test -f "$existing_info" || ! cmp -s "$existing_info" "$info"; then
+                echo "Refusing to replace release assets built from a different compatibility tuple" >&2
+                test ! -f "$existing_info" || diff -u "$existing_info" "$info" || true
+                exit 1
+              fi
+            done
             gh release upload "$tag" dist/* --clobber
           else
             gh release create "$tag" dist/* --title "$title" --notes "$notes"
