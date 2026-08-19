@@ -54,7 +54,8 @@ produce an attested set of architecture-specific workflow artifacts without
 changing release state unless publishing is selected. Pull requests build and
 import-test the default compatibility tuple for every supported architecture,
 then upload the wheels as workflow artifacts without attesting or publishing
-them.
+them. Pushes to `main` repeat that build and validation so the default branch
+always has a successful wheel artifact set of its own.
 
 ## Compatibility
 

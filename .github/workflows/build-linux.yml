@@ -2,6 +2,9 @@ name: Build Linux wheel
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       sage_ref:
