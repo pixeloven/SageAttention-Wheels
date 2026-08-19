@@ -43,20 +43,25 @@ on:
 permissions:
   contents: read
 
+env:
+  # Pull requests build this tuple. Keep these fallbacks aligned with the
+  # workflow_dispatch defaults, Dockerfile ARGs, and README compatibility table.
+  SAGE_REF: ${{ inputs.sage_ref || 'v2.2.0' }}
+  PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
+  TORCH_VERSION: ${{ inputs.torch_version || '2.13.0' }}
+  TORCH_INDEX: ${{ inputs.torch_index || 'cu130' }}
+  CUDA_VERSION: ${{ inputs.cuda_version || '13.0.2' }}
+  CUDA_ARCH_LIST: ${{ inputs.cuda_arch_list || '8.0;8.6;8.9;9.0;10.0;12.0;12.1' }}
+
+concurrency:
+  group: build-linux-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      SAGE_REF: ${{ inputs.sage_ref || 'v2.2.0' }}
-      PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
-      TORCH_VERSION: ${{ inputs.torch_version || '2.13.0' }}
-      TORCH_INDEX: ${{ inputs.torch_index || 'cu130' }}
-      CUDA_VERSION: ${{ inputs.cuda_version || '13.0.2' }}
-      CUDA_ARCH_LIST: ${{ inputs.cuda_arch_list || '8.0;8.6;8.9;9.0;10.0;12.0;12.1' }}
-    permissions:
-      attestations: write
-      contents: write
-      id-token: write
+    outputs:
+      sage_commit: ${{ steps.source.outputs.sha }}
 
     steps:
       - uses: actions/checkout@v7
@@ -109,29 +114,52 @@ jobs:
             echo "cuda_arch_list=$CUDA_ARCH_LIST"
           } | tee dist/BUILD-INFO.txt
 
-      - name: Attest wheel
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/*.whl
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}
           path: dist/
-          archive: false
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Download built wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}
+          path: dist
+
+      - name: Attest wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
 
       - name: Publish GitHub release
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        if: inputs.publish_release
         env:
           GH_TOKEN: ${{ github.token }}
-          SAGE_COMMIT: ${{ steps.source.outputs.sha }}
+          SAGE_COMMIT: ${{ needs.build.outputs.sage_commit }}
         run: |
           tag="sageattention-${SAGE_REF}-${TORCH_INDEX}-torch${TORCH_VERSION}"
           title="SageAttention ${SAGE_REF} · ${TORCH_INDEX} · Torch ${TORCH_VERSION}"
           notes="Built from thu-ml/SageAttention commit ${SAGE_COMMIT} with CUDA ${CUDA_VERSION}."
           if gh release view "$tag" >/dev/null 2>&1; then
+            existing=$(mktemp -d)
+            trap 'rm -rf "$existing"' EXIT
+            gh release download "$tag" --pattern BUILD-INFO.txt --dir "$existing"
+            if ! cmp -s "$existing/BUILD-INFO.txt" dist/BUILD-INFO.txt; then
+              echo "Refusing to replace release assets built from a different compatibility tuple" >&2
+              diff -u "$existing/BUILD-INFO.txt" dist/BUILD-INFO.txt || true
+              exit 1
+            fi
             gh release upload "$tag" dist/* --clobber
           else
             gh release create "$tag" dist/* --title "$title" --notes "$notes"

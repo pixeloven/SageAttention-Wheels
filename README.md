@@ -42,8 +42,9 @@ includes the CUDA and PyTorch compatibility tuple, for example:
 sageattention-2.2.0+cu130.torch2.13.0-cp312-cp312-linux_x86_64.whl
 ```
 
-Publishing a GitHub release is an explicit workflow option. Ordinary runs
-produce an attested workflow artifact without changing release state.
+Publishing a GitHub release is an explicit workflow option. Manual runs
+produce an attested workflow artifact without changing release state unless
+publishing is selected.
 Pull requests build and import-test the default compatibility tuple, then
 upload the wheel as a workflow artifact without attesting or publishing it.
 
