@@ -12,7 +12,7 @@ the `pixeloven/SageAttention` fork track the canonical project directly.
 
 - Linux x86-64 wheels for ComfyUI container images
 - Explicit SageAttention, Python, PyTorch, and CUDA versions
-- CUDA architectures selected at build time
+- Architecture-specific CUDA wheels selected at build time
 - Import validation before an artifact can be published
 - GitHub artifact attestations for produced wheels
 
@@ -35,24 +35,26 @@ tuple. Its defaults follow the current PixelOven ComfyUI CUDA image:
 | CUDA architectures | `8.0;8.6;8.9;9.0;12.0` |
 
 Upstream SageAttention v2.2.0 compiles kernels only for compute capabilities
-8.0, 8.6, 8.9, 9.0, and 12.0 and silently ignores anything else in
-`TORCH_CUDA_ARCH_LIST`; the build fails fast if the architecture list requests
-an unsupported entry. GPUs with another capability of a supported major
-version, such as sm_121, execute the sm_120 kernels.
+8.0, 8.6, 8.9, 9.0, and 12.0. Its extensions contain architecture-specific
+CUDA instructions, so the workflow builds one wheel per requested capability
+instead of combining them into a fat binary. The build fails fast if the list
+requests an unsupported entry. GPUs with another capability of a supported
+major version, such as sm_121, execute the sm_120 wheel.
 
 The workflow resolves the requested ref through the canonical repository and
 passes the immutable commit SHA to the build. The resulting package version
 includes the CUDA and PyTorch compatibility tuple, for example:
 
 ```text
-sageattention-2.2.0+cu130.torch2.13.0-cp312-cp312-linux_x86_64.whl
+sageattention-2.2.0+cu130.torch2.13.0.sm90-cp312-cp312-linux_x86_64.whl
 ```
 
 Publishing a GitHub release is an explicit workflow option. Manual runs
-produce an attested workflow artifact without changing release state unless
-publishing is selected.
-Pull requests build and import-test the default compatibility tuple, then
-upload the wheel as a workflow artifact without attesting or publishing it.
+produce an attested set of architecture-specific workflow artifacts without
+changing release state unless publishing is selected. Pull requests build and
+import-test the default compatibility tuple for every supported architecture,
+then upload the wheels as workflow artifacts without attesting or publishing
+them.
 
 ## Compatibility
 

@@ -7,7 +7,8 @@ ARG SAGE_COMMIT
 ARG PYTHON_VERSION=3.12
 ARG TORCH_VERSION=2.13.0
 ARG TORCH_INDEX=cu130
-ARG CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0"
+ARG CUDA_ARCH_LIST="8.0"
+ARG CUDA_ARCH_TAG=sm80
 
 RUN test -n "${SAGE_COMMIT}"
 
@@ -43,7 +44,7 @@ COPY scripts/prepare_source.py /usr/local/bin/prepare-source
 
 RUN python /usr/local/bin/prepare-source \
         --source /src \
-        --local-version "${TORCH_INDEX}.torch${TORCH_VERSION}" \
+        --local-version "${TORCH_INDEX}.torch${TORCH_VERSION}.${CUDA_ARCH_TAG}" \
         --arch-list "${CUDA_ARCH_LIST}"
 
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}"
