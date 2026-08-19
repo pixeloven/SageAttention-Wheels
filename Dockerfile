@@ -47,7 +47,7 @@ RUN python /usr/local/bin/prepare-source \
         --arch-list "${CUDA_ARCH_LIST}"
 
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}"
-ENV MAX_JOBS=2
+ENV MAX_JOBS=1
 
 RUN cd /src \
     && python setup.py bdist_wheel \
