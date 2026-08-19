@@ -1,0 +1,131 @@
+name: Build Linux wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      sage_ref:
+        description: Canonical thu-ml/SageAttention tag, branch, or commit
+        required: true
+        default: v2.2.0
+        type: string
+      python_version:
+        description: Python version available in the CUDA Ubuntu image
+        required: true
+        default: "3.12"
+        type: string
+      torch_version:
+        description: Exact PyTorch version
+        required: true
+        default: "2.13.0"
+        type: string
+      torch_index:
+        description: PyTorch CUDA wheel channel
+        required: true
+        default: cu130
+        type: string
+      cuda_version:
+        description: NVIDIA CUDA devel image version
+        required: true
+        default: "13.0.2"
+        type: string
+      cuda_arch_list:
+        description: Semicolon-separated Torch CUDA architecture list
+        required: true
+        default: "8.0;8.6;8.9;9.0;10.0;12.0;12.1"
+        type: string
+      publish_release:
+        description: Publish the wheel as a GitHub release asset
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve canonical source ref
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SAGE_REF: ${{ inputs.sage_ref }}
+        run: |
+          sha=$(gh api "repos/thu-ml/SageAttention/commits/${SAGE_REF}" --jq .sha)
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and validate wheel
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: export
+          outputs: type=local,dest=dist
+          build-args: |
+            SAGE_COMMIT=${{ steps.source.outputs.sha }}
+            PYTHON_VERSION=${{ inputs.python_version }}
+            TORCH_VERSION=${{ inputs.torch_version }}
+            TORCH_INDEX=${{ inputs.torch_index }}
+            CUDA_VERSION=${{ inputs.cuda_version }}
+            CUDA_ARCH_LIST=${{ inputs.cuda_arch_list }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Record build provenance
+        env:
+          SAGE_COMMIT: ${{ steps.source.outputs.sha }}
+          SAGE_REF: ${{ inputs.sage_ref }}
+        run: |
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          sha256sum "$wheel" | tee dist/SHA256SUMS
+          {
+            echo "upstream_repository=https://github.com/thu-ml/SageAttention"
+            echo "upstream_ref=$SAGE_REF"
+            echo "upstream_commit=$SAGE_COMMIT"
+            echo "python=${{ inputs.python_version }}"
+            echo "torch=${{ inputs.torch_version }}"
+            echo "torch_index=${{ inputs.torch_index }}"
+            echo "cuda=${{ inputs.cuda_version }}"
+            echo "cuda_arch_list=${{ inputs.cuda_arch_list }}"
+          } | tee dist/BUILD-INFO.txt
+
+      - name: Attest wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sageattention-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}
+          path: dist/
+          archive: false
+
+      - name: Publish GitHub release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SAGE_COMMIT: ${{ steps.source.outputs.sha }}
+        run: |
+          tag="sageattention-${{ inputs.sage_ref }}-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}"
+          title="SageAttention ${{ inputs.sage_ref }} · ${{ inputs.torch_index }} · Torch ${{ inputs.torch_version }}"
+          notes="Built from thu-ml/SageAttention commit ${SAGE_COMMIT} with CUDA ${{ inputs.cuda_version }}."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "$title" --notes "$notes"
+          fi
