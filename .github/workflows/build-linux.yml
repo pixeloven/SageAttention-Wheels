@@ -32,7 +32,7 @@ on:
       cuda_arch_list:
         description: Semicolon-separated Torch CUDA architecture list
         required: true
-        default: "8.0;8.6;8.9;9.0;10.0;12.0;12.1"
+        default: "8.0;8.6;8.9;9.0;12.0"
         type: string
       publish_release:
         description: Publish the wheel as a GitHub release asset
@@ -51,7 +51,7 @@ env:
   TORCH_VERSION: ${{ inputs.torch_version || '2.13.0' }}
   TORCH_INDEX: ${{ inputs.torch_index || 'cu130' }}
   CUDA_VERSION: ${{ inputs.cuda_version || '13.0.2' }}
-  CUDA_ARCH_LIST: ${{ inputs.cuda_arch_list || '8.0;8.6;8.9;9.0;10.0;12.0;12.1' }}
+  CUDA_ARCH_LIST: ${{ inputs.cuda_arch_list || '8.0;8.6;8.9;9.0;12.0' }}
 
 concurrency:
   group: build-linux-${{ github.event.pull_request.number || github.run_id }}
@@ -65,6 +65,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
       - name: Resolve canonical source ref
         id: source
@@ -92,7 +95,7 @@ jobs:
             CUDA_VERSION=${{ env.CUDA_VERSION }}
             CUDA_ARCH_LIST=${{ env.CUDA_ARCH_LIST }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
           provenance: false
           sbom: false
 
@@ -124,6 +127,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-${{ inputs.sage_ref }}-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}
     permissions:
       actions: read
       attestations: write

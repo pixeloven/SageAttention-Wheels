@@ -7,7 +7,7 @@ ARG SAGE_COMMIT
 ARG PYTHON_VERSION=3.12
 ARG TORCH_VERSION=2.13.0
 ARG TORCH_INDEX=cu130
-ARG CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0;12.1"
+ARG CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0"
 
 RUN test -n "${SAGE_COMMIT}"
 
@@ -25,12 +25,12 @@ RUN apt-get update \
 RUN python${PYTHON_VERSION} -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
-RUN python -m pip install --upgrade pip \
+RUN python -m pip install --upgrade "pip==26.2.1" \
     && python -m pip install \
-        "packaging>=21,<24" \
-        "setuptools>=62,<75" \
-        "wheel>=0.38,<0.44" \
-        ninja \
+        "packaging==23.2" \
+        "setuptools==74.1.3" \
+        "wheel==0.43.0" \
+        "ninja==1.13.0" \
     && python -m pip install \
         --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}" \
         "torch==${TORCH_VERSION}"
@@ -43,13 +43,15 @@ COPY scripts/prepare_source.py /usr/local/bin/prepare-source
 
 RUN python /usr/local/bin/prepare-source \
         --source /src \
-        --local-version "cu${TORCH_INDEX#cu}.torch${TORCH_VERSION}"
+        --local-version "${TORCH_INDEX}.torch${TORCH_VERSION}" \
+        --arch-list "${CUDA_ARCH_LIST}"
 
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}"
 ENV MAX_JOBS=2
 
 RUN cd /src \
-    && python setup.py bdist_wheel
+    && python setup.py bdist_wheel \
+    && python -m pip freeze --all > /src/dist/TOOLCHAIN.txt
 
 FROM builder AS test
 
