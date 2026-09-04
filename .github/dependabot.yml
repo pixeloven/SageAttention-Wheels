@@ -1,0 +1,11 @@
+# Exact version pins do not update themselves, and an unattended pin is a stale
+# pin. This is what makes pinning by version sustainable.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

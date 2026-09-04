@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+    tags:
+      # A release. The version lives in VERSION; the tag only selects it.
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       sage_ref:
@@ -37,11 +40,6 @@ on:
         required: true
         default: "8.0;8.6;8.9;9.0;12.0"
         type: string
-      publish_release:
-        description: Publish the wheel as a GitHub release asset
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -69,7 +67,7 @@ jobs:
       architectures: ${{ steps.architectures.outputs.matrix }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Resolve canonical source ref
         id: source
@@ -107,16 +105,16 @@ jobs:
         architecture: ${{ fromJSON(needs.source.outputs.architectures) }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Free runner disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.3.0
 
       - name: Build and validate wheel
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           target: export
@@ -156,17 +154,20 @@ jobs:
           } | tee "dist/BUILD-INFO-${CUDA_ARCH_TAG}.txt"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-${{ matrix.architecture.tag }}
           path: dist/
 
   publish:
-    if: github.event_name == 'workflow_dispatch'
+    # A release, and only a release. `workflow_dispatch` still builds any tuple
+    # for experimentation; it no longer publishes, so there is exactly one path
+    # by which bytes reach a release asset.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [source, build]
     runs-on: ubuntu-latest
     concurrency:
-      group: publish-${{ inputs.sage_ref }}-${{ inputs.torch_index }}-torch${{ inputs.torch_version }}
+      group: publish-${{ github.ref }}
     permissions:
       actions: read
       attestations: write
@@ -174,41 +175,95 @@ jobs:
       id-token: write
 
     steps:
+      # VERSION and CHANGELOG.md are read below, so the repo has to be here.
+      - uses: actions/checkout@v7.0.1
+
       - name: Download built wheel
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           pattern: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-sm*
           merge-multiple: true
           path: dist
 
       - name: Attest wheel
-        uses: actions/attest@v4
+        uses: actions/attest@v4.2.2
         with:
           subject-path: dist/*.whl
 
+      # Minted just above. Verifying it here is what makes it a control rather
+      # than a file we happen to produce.
+      - name: The attestation verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for wheel in dist/*.whl; do
+            gh attestation verify "$wheel" --repo "$GITHUB_REPOSITORY"
+            echo "attested: $(basename "$wheel")"
+          done
+
+      - name: The tag matches VERSION
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF#refs/tags/v}"
+          declared="$(tr -d '[:space:]' < VERSION)"
+          if ! printf '%s' "$tagged" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::v${tagged} is not a release version. Prereleases are not published."
+            exit 1
+          fi
+          if [ "$tagged" != "$declared" ]; then
+            echo "::error::tag v${tagged} does not match VERSION (${declared})"
+            exit 1
+          fi
+          echo "version ${tagged} confirmed"
+          echo "VERSION_NUMBER=${tagged}" >> "$GITHUB_ENV"
+
+      - name: Release notes, from the changelog
+        run: |
+          set -euo pipefail
+          heading="$(grep -m1 -F "## ${VERSION_NUMBER} " CHANGELOG.md || true)"
+          if [ -z "$heading" ]; then
+            echo "::error::CHANGELOG.md has no '## ${VERSION_NUMBER}' section. Add one before tagging."
+            exit 1
+          fi
+          case "$heading" in
+            *unreleased*) echo "::error::CHANGELOG.md still marks ${VERSION_NUMBER} unreleased."; exit 1 ;;
+          esac
+          awk -v want="## ${VERSION_NUMBER} " 'index($0, want)==1 {g=1; next} g && /^## / {exit} g {print}' \
+            CHANGELOG.md > notes.md
+          test -s notes.md || { echo "::error::the ${VERSION_NUMBER} section is empty"; exit 1; }
+
       - name: Publish GitHub release
-        if: inputs.publish_release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SAGE_COMMIT: ${{ needs.source.outputs.sage_commit }}
         run: |
-          tag="sageattention-${SAGE_REF}-${TORCH_INDEX}-torch${TORCH_VERSION}"
-          title="SageAttention ${SAGE_REF} · ${TORCH_INDEX} · Torch ${TORCH_VERSION}"
-          notes="Built from thu-ml/SageAttention commit ${SAGE_COMMIT} with CUDA ${CUDA_VERSION}."
+          set -euo pipefail
+          tag="v${VERSION_NUMBER}"
+
+          # Refuse rather than clobber. The previous guard compared BUILD-INFO,
+          # which records only the compatibility tuple -- so a rebuild from a
+          # CHANGED BUILD SCRIPT produced identical BUILD-INFO, passed, and
+          # replaced wheel bytes under a tag consumers pin by URL. There is no
+          # replace path now: a rebuild is a new version.
           if gh release view "$tag" >/dev/null 2>&1; then
-            existing=$(mktemp -d)
-            trap 'rm -rf "$existing"' EXIT
-            gh release download "$tag" --pattern 'BUILD-INFO-sm*.txt' --dir "$existing"
-            for info in dist/BUILD-INFO-sm*.txt; do
-              existing_info="$existing/$(basename "$info")"
-              if ! test -f "$existing_info" || ! cmp -s "$existing_info" "$info"; then
-                echo "Refusing to replace release assets built from a different compatibility tuple" >&2
-                test ! -f "$existing_info" || diff -u "$existing_info" "$info" || true
-                exit 1
-              fi
-            done
-            gh release upload "$tag" dist/* --clobber
-          else
-            gh release create "$tag" dist/* --title "$title" --notes "$notes"
+            echo "::error::release ${tag} already exists. A rebuild is a new version -- bump VERSION."
+            exit 1
           fi
+
+          {
+            echo ""
+            echo "Built from thu-ml/SageAttention \`${SAGE_COMMIT}\` (\`${SAGE_REF}\`),"
+            echo "Torch ${TORCH_VERSION} \`${TORCH_INDEX}\`, CUDA ${CUDA_VERSION}."
+            echo ""
+            echo "Each wheel is named for the target it was built for, and ships"
+            echo "\`SHA256SUMS-*\`, \`BUILD-INFO-*\` and \`TOOLCHAIN-*\` beside it."
+            echo "Pin by URL and verify against the checksum -- these releases are"
+            echo "not immutable."
+          } >> notes.md
+
+          gh release create "$tag" dist/* \
+            --title "v${VERSION_NUMBER} — SageAttention ${SAGE_REF} · ${TORCH_INDEX} · Torch ${TORCH_VERSION}" \
+            --notes-file notes.md --verify-tag
+          gh release view "$tag" --json assets --jq '.assets[].name' | sed 's/^/published: /' 
