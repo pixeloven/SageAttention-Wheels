@@ -49,13 +49,34 @@ includes the CUDA and PyTorch compatibility tuple, for example:
 sageattention-2.2.0+cu130.torch2.13.0.sm90-cp312-cp312-linux_x86_64.whl
 ```
 
-Publishing a GitHub release is an explicit workflow option. Manual runs
-produce an attested set of architecture-specific workflow artifacts without
-changing release state unless publishing is selected. Pull requests build and
-import-test the default compatibility tuple for every supported architecture,
-then upload the wheels as workflow artifacts without attesting or publishing
-them. Pushes to `main` repeat that build and validation so the default branch
-always has a successful wheel artifact set of its own.
+## Versioning and releases
+
+**This repository has its own semver, in `VERSION`.** It describes *our build*,
+not upstream's release — so rebuilding the same SageAttention version with a
+fixed build script is a patch bump here, and upstream's version stays where it
+belongs: in the wheel filename and `BUILD-INFO`.
+
+A release is a `vX.Y.Z` tag, and it is the only thing that publishes. CI refuses
+a tag that disagrees with `VERSION`, refuses a prerelease, and **refuses to
+publish over an existing release** — a rebuild is a new version, never a
+replacement.
+
+That last one closes a real hole. The tag used to *be* the compatibility tuple
+(`sageattention-v2.2.0-cu130-torch2.13.0`), with nowhere to say "same target,
+rebuilt". Rebuilds therefore reused the tag, and the guard against that compared
+`BUILD-INFO` — which records only the tuple. A rebuild from a changed build
+script produced identical `BUILD-INFO`, passed, and reached
+`gh release upload --clobber`, silently replacing wheel bytes under a URL
+consumers pin.
+
+Releases here are **not** immutable, deliberately. So pin by URL *and* verify
+against the published `SHA256SUMS-*` — which is what the consuming
+`docker-bake.hcl` in ComfyUI-Docker does.
+
+`workflow_dispatch` still builds any tuple for experimentation; it no longer
+publishes. Pull requests and pushes to `main` build and import-test the default
+tuple for every supported architecture and upload workflow artifacts, without
+attesting or publishing.
 
 ## Compatibility
 
