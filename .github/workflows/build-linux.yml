@@ -111,10 +111,10 @@ jobs:
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.3.0
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Build and validate wheel
-        uses: docker/build-push-action@v7.3.0
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           target: export
@@ -154,7 +154,7 @@ jobs:
           } | tee "dist/BUILD-INFO-${CUDA_ARCH_TAG}.txt"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-${{ matrix.architecture.tag }}
           path: dist/
@@ -179,7 +179,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Download built wheel
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: sageattention-${{ env.TORCH_INDEX }}-torch${{ env.TORCH_VERSION }}-sm*
           merge-multiple: true
